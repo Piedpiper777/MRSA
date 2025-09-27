@@ -106,33 +106,38 @@ class BertBiLSTMCRF(nn.Module):
         return logits
     
     def _compute_loss(self, logits, labels, attention_mask):
-        """改进的CRF损失计算"""
-        # 确保形状一致
+        """简化版 CRF 损失：与可跑通脚本保持一致逻辑。
+        规则：
+          1) 使用 attention_mask 作为 CRF 的有效位置（包含 [CLS]/[SEP] 也无妨）
+          2) 将 labels 中的 -100 替换为 0 (O) 以满足 CRF 不接受负数的限制
+          3) 仅在需要时对齐长度
+        """
         if attention_mask.shape != labels.shape:
             min_len = min(attention_mask.size(1), labels.size(1))
             attention_mask = attention_mask[:, :min_len]
             labels = labels[:, :min_len]
             logits = logits[:, :min_len, :]
-        
-        # 创建mask
-        mask = attention_mask.bool() & (labels != -100)
-        
-        # 清理无效标签
-        valid_labels = labels.clone()
-        invalid_mask = (labels < 0) | (labels >= self.num_labels)
-        valid_labels[invalid_mask] = 0  # 设为O标签
-        
-        # 计算CRF损失
+
+        mask = attention_mask.bool()
+
+        # 复制并替换 ignore_index=-100 为 0 (O 标签)
+        crf_labels = labels.clone()
+        # 检测非法（除 -100 外的越界）标签并回退为 O
+        invalid_raw = (crf_labels != -100) & ((crf_labels < 0) | (crf_labels >= self.num_labels))
+        if invalid_raw.any():
+            # 打印一次警告（可按需去掉）
+            print(f"警告: 发现越界标签 {crf_labels[invalid_raw].unique().tolist()}，已替换为 O")
+            crf_labels[invalid_raw] = -100
+        crf_labels[crf_labels == -100] = 0
+
         try:
-            loss = -self.crf(logits, valid_labels, mask=mask, reduction='mean')
+            loss = -self.crf(logits, crf_labels, mask=mask, reduction='mean')
         except Exception as e:
-            # 备用损失计算（交叉熵）
             print(f"CRF计算失败，使用交叉熵损失: {e}")
-            active_loss = mask.view(-1)
-            active_logits = logits.view(-1, self.num_labels)[active_loss]
-            active_labels = valid_labels.view(-1)[active_loss]
+            active = mask.view(-1)
+            active_logits = logits.view(-1, self.num_labels)[active]
+            active_labels = crf_labels.view(-1)[active]
             loss = F.cross_entropy(active_logits, active_labels)
-        
         return loss
     
     def decode(self, logits, attention_mask=None):
