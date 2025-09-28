@@ -72,13 +72,13 @@ USE_CLI = False
 @dataclass
 class TrainConfig:
     # 数据参数
-    train_file: str = r"/workspace/MRSA/data/splits/labeled_1%.json"
+    train_file: str = r"/workspace/data/splits/labeled_1%.json"
     eval_file: str | None = None  # 若为 None 自动切分
     output_dir: str = "../models/saved_models"
     # 模型参数
-    bert_model: str = r"/workspace/MRSA/models/google-bert/bert-base-chinese"
+    bert_model: str = r"/workspace/models/google-bert/bert-base-chinese"
     max_seq_length: int = 128
-    lstm_hidden_size: int = 256
+    lstm_hidden_size: int = 128
     lstm_layers: int = 2
     dropout: float = 0.1
     # 训练策略 (BERT 冻结策略简化为单参数)
@@ -86,8 +86,8 @@ class TrainConfig:
     #   None 或 0 -> 不冻结
     #   正整数 N  -> 冻结前 N 层 encoder.layer (以及 embeddings)
     #   -1        -> 冻结全部 BERT 参数
-    freeze_bert_layers: int | None = None
-    batch_size: int = 32
+    freeze_bert_layers: int = 6 #| None = None
+    batch_size: int = 16
     adam_epsilon: float = 1e-8
     max_grad_norm: float = 1.0
     num_train_epochs: int = 20

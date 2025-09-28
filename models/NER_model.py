@@ -72,7 +72,7 @@ class BertBiLSTMCRF(nn.Module):
         nn.init.xavier_uniform_(self.classifier.weight)
         nn.init.zeros_(self.classifier.bias)
     
-    def forward(self, input_ids, attention_mask=None, labels=None, return_hidden=False):
+    def forward(self, input_ids, attention_mask=None, labels=None):
         """前向传播"""
         # 兼容输入格式
         if attention_mask is None and isinstance(input_ids, (list, tuple)):
@@ -95,9 +95,6 @@ class BertBiLSTMCRF(nn.Module):
         # 分类层
         logits = self.classifier(lstm_output)
         
-        if return_hidden:
-            return sequence_output, lstm_output, logits
-        
         if labels is not None:
             # 确保labels在正确设备上
             labels = labels.to(device)
@@ -106,42 +103,79 @@ class BertBiLSTMCRF(nn.Module):
         return logits
     
     def _compute_loss(self, logits, labels, attention_mask):
-        """简化版 CRF 损失：与可跑通脚本保持一致逻辑。
-        规则：
-          1) 使用 attention_mask 作为 CRF 的有效位置（包含 [CLS]/[SEP] 也无妨）
-          2) 将 labels 中的 -100 替换为 0 (O) 以满足 CRF 不接受负数的限制
-          3) 仅在需要时对齐长度
+        """改进版 CRF 损失计算
+
+        改进要点：
+          1) 仅把真正有标签的 token (labels != -100 且 attention_mask=1) 作为 CRF 有效位置，避免 [CLS]/[SEP] 参与状态转移学习。
+          2) 对齐维度，防御性截断。
+          3) 将 ignore_index(-100) / 越界标签统一映射为 0(O) 供 CRF 计算，但不会在 mask 中启用这些位置。
+          4) 保证每个 batch 序列至少有一个 True 的 mask（CRF 要求第一步全部有效，如果第一步无效则显式强制其有效且标为 O）。
+          5) 出错自动回退交叉熵，只在有效 token 上计算。
         """
-        if attention_mask.shape != labels.shape:
-            min_len = min(attention_mask.size(1), labels.size(1))
+        # ---- 维度对齐 ----
+        if attention_mask.shape != labels.shape or logits.size(1) != labels.size(1):
+            min_len = min(attention_mask.size(1), labels.size(1), logits.size(1))
             attention_mask = attention_mask[:, :min_len]
             labels = labels[:, :min_len]
             logits = logits[:, :min_len, :]
 
-        mask = attention_mask.bool()
+        # 基础 mask（去除 padding）
+        base_mask = attention_mask.bool()
+        # 有效标签位置（排除 ignore_index）
+        label_valid = labels != -100
+        # 仅真正需要训练的 token mask
+        valid_mask = base_mask & label_valid
 
-        # 复制并替换 ignore_index=-100 为 0 (O 标签)
+        # 处理越界标签：标记为 ignore
+        invalid_mask = (labels != -100) & ((labels < 0) | (labels >= self.num_labels))
+        if invalid_mask.any():
+            print(f"警告: 发现 {invalid_mask.sum().item()} 个越界标签，已忽略")
+            labels = labels.clone()
+            labels[invalid_mask] = -100
+            # 更新 valid_mask
+            label_valid = labels != -100
+            valid_mask = base_mask & label_valid
+
+        # ---- 确保每个序列至少有一个 True ----
+        # 若某些序列全部 False（极少见），强制第一个位置为 True，并把该标签视作 O
+        row_has_token = valid_mask.any(dim=1)
+        if (~row_has_token).any():
+            need_fix = (~row_has_token).nonzero(as_tuple=False).flatten()
+            if len(need_fix) > 0:
+                valid_mask[need_fix, 0] = True
+                # 更安全的标签修正
+                if (labels[need_fix, 0] == -100).any():
+                    labels = labels.clone()  # 确保不in-place修改
+                    labels[need_fix, 0] = 0
+
+        # CRF 接收的 mask
+        crf_mask = valid_mask
+
+        # 构造 CRF 标签：复制并把所有 ignore_index 换成 0
         crf_labels = labels.clone()
-        # 检测非法（除 -100 外的越界）标签并回退为 O
-        invalid_raw = (crf_labels != -100) & ((crf_labels < 0) | (crf_labels >= self.num_labels))
-        if invalid_raw.any():
-            # 打印一次警告（可按需去掉）
-            print(f"警告: 发现越界标签 {crf_labels[invalid_raw].unique().tolist()}，已替换为 O")
-            crf_labels[invalid_raw] = -100
         crf_labels[crf_labels == -100] = 0
 
+        # 保证第一列都是 True（CRF 内部实现常假设第一时刻有效）
+        if not torch.all(crf_mask[:, 0]):
+            # 只把第一列补 True，不改变其它列
+            crf_mask[:, 0] = True
+            # 对第一列被补上的（原本 False）标签设为 O
+            need_o = (labels[:, 0] == -100)
+            if need_o.any():
+                crf_labels[need_o, 0] = 0
+
         try:
-            loss = -self.crf(logits, crf_labels, mask=mask, reduction='mean')
+            loss = -self.crf(logits, crf_labels, mask=crf_mask, reduction='mean')
         except Exception as e:
-            print(f"CRF计算失败，使用交叉熵损失: {e}")
-            active = mask.view(-1)
+            print(f"CRF计算失败，使用交叉熵损失回退: {e}")
+            active = crf_mask.view(-1)
             active_logits = logits.view(-1, self.num_labels)[active]
             active_labels = crf_labels.view(-1)[active]
             loss = F.cross_entropy(active_logits, active_labels)
         return loss
     
     def decode(self, logits, attention_mask=None):
-        """改进的CRF解码"""
+        """CRF解码"""
         if attention_mask is None:
             attention_mask = torch.ones(logits.shape[0], logits.shape[1], 
                                       dtype=torch.bool, device=logits.device)
@@ -150,7 +184,7 @@ class BertBiLSTMCRF(nn.Module):
         return self.crf.decode(logits, mask=mask)
     
     def predict(self, input_ids, attention_mask=None):
-        """改进的预测函数"""
+        """预测函数"""
         self.eval()
         
         # 设备处理
