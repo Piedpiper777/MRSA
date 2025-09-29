@@ -1,0 +1,11 @@
+{
+  "fold_id": 11,
+  "model_path": "/workspace/data/judge_data/1-99/temp/fold_11_model/best_model_f1_0.9268",
+  "train_samples": 406,
+  "test_samples": 11,
+  "judge_samples": 11,
+  "total_entities": 18,
+  "correct_entities": 13,
+  "entity_accuracy": 0.7222222222222222,
+  "avg_sequence_accuracy": 0.9720658836000381
+}

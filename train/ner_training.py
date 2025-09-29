@@ -72,13 +72,13 @@ USE_CLI = False
 @dataclass
 class TrainConfig:
     # 数据参数
-    train_file: str = r"/workspace/data/splits/labeled_1%.json"
+    train_file: str = r"/workspace/MRSA/data/splits/labeled_1%.json"
     eval_file: str | None = None  # 若为 None 自动切分
     output_dir: str = "../models/saved_models"
     # 模型参数
-    bert_model: str = r"/workspace/models/google-bert/bert-base-chinese"
+    bert_model: str = r"/workspace/MRSA/models/google-bert/bert-base-chinese"
     max_seq_length: int = 128
-    lstm_hidden_size: int = 128
+    lstm_hidden_size: int = 256
     lstm_layers: int = 2
     dropout: float = 0.1
     # 训练策略 (BERT 冻结策略简化为单参数)
@@ -86,8 +86,8 @@ class TrainConfig:
     #   None 或 0 -> 不冻结
     #   正整数 N  -> 冻结前 N 层 encoder.layer (以及 embeddings)
     #   -1        -> 冻结全部 BERT 参数
-    freeze_bert_layers: int = 6 #| None = None
-    batch_size: int = 16
+    freeze_bert_layers: int | None = None
+    batch_size: int = 32
     adam_epsilon: float = 1e-8
     max_grad_norm: float = 1.0
     num_train_epochs: int = 20
@@ -113,6 +113,7 @@ class TrainConfig:
     delete_redundant_on_save: bool = True  # 保存后立即触发清理
 
 def build_namespace_from_dataclass(dc: TrainConfig) -> SimpleNamespace:
+    """将 dataclass 实例转换为 SimpleNamespace，便于 argparse 兼容"""
     return SimpleNamespace(**asdict(dc))
 
 
@@ -376,7 +377,7 @@ def train(args):
             if current_f1 > best_f1 + args.min_delta:
                 logger.info(f"F1 提升 {best_f1:.4f} -> {current_f1:.4f}，保存最佳模型")
                 best_f1 = current_f1
-                save_model(model, args.output_dir, f"best_model_f1_{best_f1:.4f}")
+                save_model(model, args.output_dir, f"best_model_f1_{best_f1:.4f}", args)
                 no_improvement_count = 0
             else:
                 no_improvement_count += 1
@@ -389,13 +390,13 @@ def train(args):
 
         # ---------- 保存 checkpoint ----------
         if (epoch + 1) % args.save_steps == 0:
-            save_model(model, args.output_dir, f"checkpoint-{epoch+1}")
+            save_model(model, args.output_dir, f"checkpoint-{epoch+1}", args)
 
         if early_stop:
             break
 
     # 训练结束，保存最终模型
-    save_model(model, args.output_dir, "final_model")
+    save_model(model, args.output_dir, "final_model", args)
     training_stats = {
         "best_f1": best_f1,
         "completed_epochs": epoch + 1,
@@ -497,7 +498,7 @@ def format_metrics(metrics: dict, decimals: int = 4) -> str:
             )
     return "\n" + "\n".join(lines)
 
-def save_model(model, output_dir, name):
+def save_model(model, output_dir, name, args=None):
     """保存模型和配置 (带磁盘空间检查 + 原子写 + 回退策略 + 轮换清理)"""
     model_dir = os.path.join(output_dir, name)
     os.makedirs(model_dir, exist_ok=True)
@@ -564,19 +565,28 @@ def save_model(model, output_dir, name):
         logger.warning(f"保存 config.json 失败: {e}")
 
     logger.info(f"模型保存到 {model_dir}")
-    _rotate_checkpoints(output_dir)
-    if name.startswith("best_model_f1_"):
-        _rotate_best_models(output_dir)
+    
+    # 传递配置参数给清理函数
+    if args is not None:
+        _rotate_checkpoints(output_dir, args.max_checkpoints_to_keep)
+        if name.startswith("best_model_f1_"):
+            _rotate_best_models(output_dir, args.max_best_models_to_keep, args.delete_redundant_on_save)
+    else:
+        # 兼容旧调用，使用默认值
+        _rotate_checkpoints(output_dir)
+        if name.startswith("best_model_f1_"):
+            _rotate_best_models(output_dir)
 
 
 _CHECKPOINT_CACHE_FILE = "checkpoint_manifest.json"
 
-def _rotate_checkpoints(output_dir: str):
+def _rotate_checkpoints(output_dir: str, max_keep: int = None):
     """根据配置 max_checkpoints_to_keep 保留最新若干个 checkpoint / best / final 不强制删除。
     只轮换名称以 'checkpoint-' 开头的目录。"""
     try:
-        cfg = TrainConfig()  # 使用默认实例 (当前实现不在运行时动态覆盖该值, 简化)
-        max_keep = cfg.max_checkpoints_to_keep
+        if max_keep is None:
+            cfg = TrainConfig()  # 使用默认实例 (当前实现不在运行时动态覆盖该值, 简化)
+            max_keep = cfg.max_checkpoints_to_keep
         manifest_path = os.path.join(output_dir, _CHECKPOINT_CACHE_FILE)
         # 获取所有 checkpoint-* 目录
         entries = [d for d in os.listdir(output_dir) if d.startswith("checkpoint-") and os.path.isdir(os.path.join(output_dir, d))]
@@ -601,13 +611,19 @@ def _rotate_checkpoints(output_dir: str):
         logger.debug(f"轮换checkpoint出错: {e}")
 
 
-def _rotate_best_models(output_dir: str):
+def _rotate_best_models(output_dir: str, max_keep: int = None, delete_redundant: bool = None):
     """清理 best_model_f1_* 目录, 仅保留最高 F1 的前 N 个 (按目录名解析)。"""
     try:
-        cfg = TrainConfig()
-        if not cfg.delete_redundant_on_save:
+        if max_keep is None or delete_redundant is None:
+            cfg = TrainConfig()
+            if delete_redundant is None:
+                delete_redundant = cfg.delete_redundant_on_save
+            if max_keep is None:
+                max_keep = cfg.max_best_models_to_keep
+        
+        if not delete_redundant:
             return
-        max_keep = max(1, cfg.max_best_models_to_keep)
+        max_keep = max(1, max_keep)
         prefix = "best_model_f1_"
         entries = [d for d in os.listdir(output_dir) if d.startswith(prefix) and os.path.isdir(os.path.join(output_dir, d))]
         if len(entries) <= max_keep:

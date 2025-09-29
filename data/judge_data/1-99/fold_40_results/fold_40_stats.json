@@ -1,0 +1,11 @@
+{
+  "fold_id": 40,
+  "model_path": "/workspace/data/judge_data/1-99/temp/fold_40_model/best_model_f1_0.9080",
+  "train_samples": 407,
+  "test_samples": 10,
+  "judge_samples": 10,
+  "total_entities": 34,
+  "correct_entities": 34,
+  "entity_accuracy": 1.0,
+  "avg_sequence_accuracy": 1.0
+}

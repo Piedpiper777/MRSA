@@ -39,55 +39,66 @@ import shutil
 class JudgeDataConfig:
     """Judge数据生成配置"""
     # 输入数据路径
-    gold_data_path: str = r"/workspace/MRSA/data/train_data/splits/1-99/labeled_1%.json" #Gold标注数据
+    gold_data_path: str = r"/workspace/data/train_data/splits/1-99/labeled_1%.json" #Gold标注数据
     
     # 输出路径
-    judge_data_dir: str = r"/workspace/MRSA/data/judge_data/1-99" #judge数据输出目录
-    val_data_path: str = r"/workspace/MRSA/data/judge_data/1-99/validation.json" #验证集保存路径
+    judge_data_dir: str = r"/workspace/data/judge_data/1-99" #judge数据输出目录
+    val_data_path: str = r"/workspace/data/judge_data/1-99/validation.json" #验证集保存路径
     
     # K折设置
-    k_folds: int = 20
+    k_folds: int = 40
     random_seed: int = 42
     val_ratio: float = 0.1
-    
-    # 完整训练配置(与ner_training.py保持一致)
-    bert_model: str = r"/workspace/MRSA/models/google-bert/bert-base-chinese"
-    max_seq_length: int = 128
-    lstm_hidden_size: int = 256
-    lstm_layers: int = 2
-    dropout: float = 0.1
-    
-    # BERT冻结策略
-    freeze_bert_layers: int | None = None  # None/0: 不冻结; -1: 全部冻结; 正整数N: 冻结前N层
-    
-    # 训练参数
-    batch_size: int = 32
-    adam_epsilon: float = 1e-8
-    max_grad_norm: float = 1.0
-    num_train_epochs: int = 20
-    warmup_steps: int = 0
-    
-    # 分组学习率
-    bert_lr: float = 2e-5
-    other_lr: float = 1e-3
-    bert_weight_decay: float = 0.1
-    other_weight_decay: float = 0.1
-    
-    # 早停和验证
-    patience: int = 5
-    min_delta: float = 0.0001
-    early_stopping: bool = True
-    logging_steps: int = 100
-    save_steps: int = 1
-    
-    # Checkpoint管理(为K折训练优化)
-    max_checkpoints_to_keep: int = 1  # 节省空间
-    max_best_models_to_keep: int = 1  # 每折只保留最好的模型
-    delete_redundant_on_save: bool = True  # 立即清理旧模型
     
     # 输出控制
     save_models: bool = False  # 是否保存中间NER模型
     verbose: bool = True
+
+
+def create_train_config(judge_config: JudgeDataConfig) -> TrainConfig:
+    """为K折训练创建优化的TrainConfig"""
+    return TrainConfig(
+        # 训练文件路径（会在每折时动态设置）
+        train_file="",  # 动态设置
+        eval_file="",   # 动态设置
+        output_dir="",  # 动态设置
+        
+        # 模型配置
+        bert_model=r"/workspace/models/google-bert/bert-base-chinese",
+        max_seq_length=128,
+        lstm_hidden_size=256,
+        lstm_layers=2,
+        dropout=0.1,
+        freeze_bert_layers=None,  # None/0: 不冻结; -1: 全部冻结; 正整数N: 冻结前N层
+        
+        # 训练参数
+        batch_size=16,
+        adam_epsilon=1e-8,
+        max_grad_norm=1.0,
+        num_train_epochs=30,
+        warmup_steps=0,
+        
+        # 分组学习率
+        bert_lr=2e-5,
+        other_lr=1e-3,
+        bert_weight_decay=0.1,
+        other_weight_decay=0.1,
+        
+        # 早停和验证
+        patience=5,
+        min_delta=0.0001,
+        early_stopping=True,
+        logging_steps=100,
+        save_steps=1,
+        
+        # Checkpoint管理(为K折训练优化)
+        max_checkpoints_to_keep=1,  # 节省空间
+        max_best_models_to_keep=1,  # 每折只保留最好的模型
+        delete_redundant_on_save=True,  # 立即清理旧模型
+        
+        # 随机种子
+        seed=judge_config.random_seed
+    )
 
 
 def load_gold_data(data_path: str) -> List[Dict[str, Any]]:
@@ -153,7 +164,8 @@ def prepare_fold_data(fold_train: List[Dict], fold_id: int, temp_dir: str) -> st
         temp_dir: 临时目录
     returns: k-1折训练数据文件路径
     """
-    fold_train_path = os.path.join(temp_dir, f"fold_{fold_id}_train.json")#把训练数据写到临时文件，并且命名为fold_{fold_id}_train.json
+    fold_index = fold_id + 1
+    fold_train_path = os.path.join(temp_dir, f"fold_{fold_index}_train.json")#把训练数据写到临时文件，并且命名为fold_{fold_index}_train.json
     #此时的fold_train_path是一个文件夹路径
     with open(fold_train_path, 'w', encoding='utf-8') as f:
         json.dump(fold_train, f, ensure_ascii=False, indent=2)
@@ -164,56 +176,35 @@ def prepare_fold_data(fold_train: List[Dict], fold_id: int, temp_dir: str) -> st
     return fold_train_path #此时的fold_train_path是一个json文件路径
 
 
-def train_fold_model(fold_train_path: str, fold_id: int, config: JudgeDataConfig, temp_dir: str) -> str:
+def train_fold_model(fold_train_path: str, fold_id: int, judge_config: JudgeDataConfig, temp_dir: str) -> str:
     """
     训练当前折的NER模型，复用ner_training.py的训练逻辑
     Args:
         fold_train_path: 当前折训练数据文件路径(JSON文件)
         fold_id: 折编号
-        config: Judge数据生成配置
+        judge_config: Judge数据生成配置
         temp_dir: 临时目录
     returns: 最佳模型路径
     """
-    model_dir = os.path.join(temp_dir, f"fold_{fold_id}_model")
+    fold_index = fold_id + 1
+    model_dir = os.path.join(temp_dir, f"fold_{fold_index}_model")
     os.makedirs(model_dir, exist_ok=True)
     
-    # 创建完整训练配置，直接映射所有参数
-    train_config = TrainConfig(
-        train_file=fold_train_path, #训练集
-        eval_file=config.val_data_path, #验证集，固定不变
-        output_dir=model_dir,  #模型输出目录
-        bert_model=config.bert_model, #预训练模型路径
-        max_seq_length=config.max_seq_length, 
-        lstm_hidden_size=config.lstm_hidden_size, 
-        lstm_layers=config.lstm_layers,
-        dropout=config.dropout,
-        freeze_bert_layers=config.freeze_bert_layers,
-        batch_size=config.batch_size,
-        adam_epsilon=config.adam_epsilon, #优化器epsilon
-        max_grad_norm=config.max_grad_norm, #梯度裁剪
-        num_train_epochs=config.num_train_epochs, #训练轮数
-        warmup_steps=config.warmup_steps, #预热步数
-        bert_lr=config.bert_lr,
-        other_lr=config.other_lr,
-        bert_weight_decay=config.bert_weight_decay,
-        other_weight_decay=config.other_weight_decay,
-        patience=config.patience,
-        min_delta=config.min_delta, #早停最小变化
-        early_stopping=config.early_stopping,
-        logging_steps=config.logging_steps, #日志记录步数
-        save_steps=config.save_steps,#保存步数
-        max_checkpoints_to_keep=config.max_checkpoints_to_keep, #最大检查点数，节省空间
-        max_best_models_to_keep=config.max_best_models_to_keep, 
-        delete_redundant_on_save=config.delete_redundant_on_save,  # 立即清理
-        seed=config.random_seed  # 使用相同的随机种子
-    )
+    # 创建TrainConfig实例
+    train_config = create_train_config(judge_config)
+    
+    # 设置fold特定的参数
+    train_config.train_file = fold_train_path  # 当前折训练数据
+    train_config.eval_file = judge_config.val_data_path  # 验证集，固定不变
+    train_config.output_dir = model_dir  # 模型输出目录
     
     # 转换为namespace格式（train函数需要）
     args = build_namespace_from_dataclass(train_config)
     
-    if config.verbose:
+    if judge_config.verbose:
         print(f"训练第{fold_id+1}折模型...")
-        print(f"配置: max_checkpoints={config.max_checkpoints_to_keep}, max_best_models={config.max_best_models_to_keep}")
+        print(f"配置: max_checkpoints={args.max_checkpoints_to_keep}, max_best_models={args.max_best_models_to_keep}")
+        print(f"删除冗余模型: {args.delete_redundant_on_save}")
     
     # 调用ner_training.py中的train函数
     train(args)
@@ -229,13 +220,13 @@ def train_fold_model(fold_train_path: str, fold_id: int, config: JudgeDataConfig
     # 选择最新的最佳模型（按修改时间）
     best_model_path = max(best_models, key=os.path.getmtime)
     
-    # 强制清理多余的模型文件（额外保障）
+    # # 强制清理多余的模型文件（额外保障）
     if len(best_models) > 1:
         for model_path in best_models:
             if model_path != best_model_path:
                 try:
                     shutil.rmtree(model_path)
-                    if config.verbose:
+                    if judge_config.verbose:
                         print(f"清理多余的best模型: {model_path}")
                 except Exception as e:
                     print(f"清理多余模型失败: {e}")
@@ -243,18 +234,18 @@ def train_fold_model(fold_train_path: str, fold_id: int, config: JudgeDataConfig
     # 清理多余的checkpoint文件
     checkpoint_pattern = os.path.join(model_dir, "checkpoint-*")
     checkpoints = glob.glob(checkpoint_pattern)
-    if len(checkpoints) > config.max_checkpoints_to_keep:
+    if len(checkpoints) > train_config.max_checkpoints_to_keep:
         # 按修改时间排序，保留最新的
         checkpoints.sort(key=os.path.getmtime, reverse=True)
-        for checkpoint in checkpoints[config.max_checkpoints_to_keep:]:
+        for checkpoint in checkpoints[train_config.max_checkpoints_to_keep:]:
             try:
                 shutil.rmtree(checkpoint)
-                if config.verbose:
+                if judge_config.verbose:
                     print(f"清理多余的checkpoint: {checkpoint}")
             except Exception as e:
                 print(f"清理checkpoint失败: {e}")
     
-    if config.verbose:
+    if judge_config.verbose:
         print(f"第{fold_id+1}折模型训练完成: {best_model_path}")
     
     return best_model_path
@@ -375,20 +366,22 @@ def extract_entity_level_features(tokens: List[str], true_tags: List[str], pred_
     return features
 
 
-def generate_judge_samples(fold_test: List[Dict], model_path: str, config: JudgeDataConfig) -> List[Dict[str, Any]]:
+def generate_judge_samples(fold_test: List[Dict], model_path: str, judge_config: JudgeDataConfig) -> List[Dict[str, Any]]:
     """
     使用训练好的模型预测测试fold，生成judge样本
     Args:
         fold_test: 当前折的测试数据列表
         model_path: 训练好的模型路径
-        config: Judge数据生成配置
+        judge_config: Judge数据生成配置
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # 加载模型和tokenizer
     cfg = load_custom_config(model_path)
-    tokenizer = AutoTokenizer.from_pretrained(config.bert_model, use_fast=True)
-    model = load_model(model_path, config.bert_model, device)#加载模型
+    # 使用TrainConfig中的bert_model路径
+    train_config = create_train_config(judge_config)
+    tokenizer = AutoTokenizer.from_pretrained(train_config.bert_model, use_fast=True)
+    model = load_model(model_path, train_config.bert_model, device)#加载模型
     max_length = cfg.get('max_length', 128)
     
     judge_samples = []
@@ -439,6 +432,7 @@ def generate_judge_samples(fold_test: List[Dict], model_path: str, config: Judge
 
 def main():
     config = JudgeDataConfig()
+    summary_train_config = create_train_config(config)
     
     print("=== K折Judge数据生成开始 ===")
     print(f"配置: K={config.k_folds}, 验证集比例={config.val_ratio}")
@@ -556,10 +550,10 @@ def main():
         "experiment_config": {
             "k_folds": config.k_folds,
             "val_ratio": config.val_ratio,
-            "num_train_epochs": config.num_train_epochs,
-            "batch_size": config.batch_size,
-            "bert_lr": config.bert_lr,
-            "other_lr": config.other_lr
+            "num_train_epochs": summary_train_config.num_train_epochs,
+            "batch_size": summary_train_config.batch_size,
+            "bert_lr": summary_train_config.bert_lr,
+            "other_lr": summary_train_config.other_lr
         },
         "results": {
             "total_samples": len(all_judge_samples),

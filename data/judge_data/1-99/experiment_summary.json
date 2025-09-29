@@ -1,0 +1,62 @@
+{
+  "experiment_config": {
+    "k_folds": 40,
+    "val_ratio": 0.1,
+    "num_train_epochs": 30,
+    "batch_size": 16,
+    "bert_lr": 2e-05,
+    "other_lr": 0.001
+  },
+  "results": {
+    "total_samples": 417,
+    "total_entities": 780,
+    "correct_entities": 589,
+    "overall_entity_accuracy": 0.7551282051282051,
+    "overall_sequence_accuracy": 0.9828645830557783
+  },
+  "files": {
+    "judge_training_data": "judge_training_data.json",
+    "fold_results": [
+      "fold_1_results/",
+      "fold_2_results/",
+      "fold_3_results/",
+      "fold_4_results/",
+      "fold_5_results/",
+      "fold_6_results/",
+      "fold_7_results/",
+      "fold_8_results/",
+      "fold_9_results/",
+      "fold_10_results/",
+      "fold_11_results/",
+      "fold_12_results/",
+      "fold_13_results/",
+      "fold_14_results/",
+      "fold_15_results/",
+      "fold_16_results/",
+      "fold_17_results/",
+      "fold_18_results/",
+      "fold_19_results/",
+      "fold_20_results/",
+      "fold_21_results/",
+      "fold_22_results/",
+      "fold_23_results/",
+      "fold_24_results/",
+      "fold_25_results/",
+      "fold_26_results/",
+      "fold_27_results/",
+      "fold_28_results/",
+      "fold_29_results/",
+      "fold_30_results/",
+      "fold_31_results/",
+      "fold_32_results/",
+      "fold_33_results/",
+      "fold_34_results/",
+      "fold_35_results/",
+      "fold_36_results/",
+      "fold_37_results/",
+      "fold_38_results/",
+      "fold_39_results/",
+      "fold_40_results/"
+    ]
+  }
+}
