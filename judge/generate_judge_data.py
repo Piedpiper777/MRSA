@@ -39,14 +39,14 @@ import shutil
 class JudgeDataConfig:
     """Judge数据生成配置"""
     # 输入数据路径
-    gold_data_path: str = r"/workspace/data/train_data/splits/1-99/labeled_1%.json" #Gold标注数据
+    gold_data_path: str = r"/workspace/MRSA/data/train_data/splits/1-99/labeled_1%.json" #Gold标注数据
     
     # 输出路径
-    judge_data_dir: str = r"/workspace/data/judge_data/1-99" #judge数据输出目录
-    val_data_path: str = r"/workspace/data/judge_data/1-99/validation.json" #验证集保存路径
+    judge_data_dir: str = r"/workspace/MRSA/data/judge_data/1-99" #judge数据输出目录
+    val_data_path: str = r"/workspace/MRSA/data/judge_data/1-99/validation.json" #验证集保存路径
     
     # K折设置
-    k_folds: int = 40
+    k_folds: int = 2
     random_seed: int = 42
     val_ratio: float = 0.1
     
@@ -64,7 +64,7 @@ def create_train_config(judge_config: JudgeDataConfig) -> TrainConfig:
         output_dir="",  # 动态设置
         
         # 模型配置
-        bert_model=r"/workspace/models/google-bert/bert-base-chinese",
+        bert_model=r"/workspace/MRSA/models/google-bert/bert-base-chinese",
         max_seq_length=128,
         lstm_hidden_size=256,
         lstm_layers=2,
@@ -75,7 +75,7 @@ def create_train_config(judge_config: JudgeDataConfig) -> TrainConfig:
         batch_size=16,
         adam_epsilon=1e-8,
         max_grad_norm=1.0,
-        num_train_epochs=30,
+        num_train_epochs=5,
         warmup_steps=0,
         
         # 分组学习率
@@ -101,16 +101,76 @@ def create_train_config(judge_config: JudgeDataConfig) -> TrainConfig:
     )
 
 
+def validate_data_format(sample: Dict[str, Any], sample_idx: int) -> bool:
+    """
+    验证数据格式是否正确
+    Args:
+        sample: 单个样本
+        sample_idx: 样本索引（用于错误报告）
+    Returns:
+        bool: 格式是否正确
+    """
+    required_fields = ['tokens', 'labels']
+    
+    for field in required_fields:
+        if field not in sample:
+            print(f"错误：样本 {sample_idx} 缺少字段 '{field}'")
+            return False
+    
+    tokens = sample['tokens']
+    labels = sample['labels']
+    
+    # 检查数据类型
+    if not isinstance(tokens, list) or not isinstance(labels, list):
+        print(f"错误：样本 {sample_idx} 的 tokens 和 labels 必须是列表")
+        return False
+    
+    # 检查长度一致性
+    if len(tokens) != len(labels):
+        print(f"错误：样本 {sample_idx} 的 tokens 长度({len(tokens)}) 与 labels 长度({len(labels)}) 不一致")
+        return False
+    
+    # 检查是否为空
+    if len(tokens) == 0:
+        print(f"警告：样本 {sample_idx} 为空序列")
+        return False
+    
+    # 检查BIO标签格式
+    valid_prefixes = {'B-', 'I-', 'O'}
+    for i, label in enumerate(labels):
+        if label != 'O' and not any(label.startswith(prefix) for prefix in valid_prefixes if prefix != 'O'):
+            print(f"错误：样本 {sample_idx} 位置 {i} 的标签 '{label}' 格式不正确")
+            return False
+    
+    return True
+
+
 def load_gold_data(data_path: str) -> List[Dict[str, Any]]:
-    """加载金标准数据"""
+    """加载金标准数据并验证格式"""
     with open(data_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
     if isinstance(data, list):
-        return data
+        raw_data = data
     else:
         # 兼容其他格式
-        return data.get('data', [])
+        raw_data = data.get('data', [])
+    
+    # 验证数据格式
+    valid_data = []
+    invalid_count = 0
+    
+    for i, sample in enumerate(raw_data):
+        if validate_data_format(sample, i):
+            valid_data.append(sample)
+        else:
+            invalid_count += 1
+    
+    if invalid_count > 0:
+        print(f"警告：发现 {invalid_count} 个无效样本，已跳过")
+        print(f"有效样本数：{len(valid_data)}")
+    
+    return valid_data
 
 
 def split_train_val(data: List[Dict], val_ratio: float, random_seed: int) -> Tuple[List[Dict], List[Dict]]:
@@ -251,75 +311,123 @@ def train_fold_model(fold_train_path: str, fold_id: int, judge_config: JudgeData
     return best_model_path
 
 
-def extract_entity_level_features(tokens: List[str], true_tags: List[str], pred_tags: List[str]) -> List[Dict[str, Any]]:
+def extract_entities(tags):
+    """
+    从BIO标签提取实体
+    Args:
+        tags: BIO标签列表
+    returns: List of entities with start, end, type
+    例如: [{'type': 'PER', 'start': 0, 'end': 2}, ...]
+    """
+    entities = []
+    current = None
+    for idx, tag in enumerate(tags):
+        if tag.startswith('B-'):
+            #如果标签是B-开头，表示一个新实体的开始
+            if current:
+                #如果当前已有实体
+                entities.append(current)
+                #把当前的实体加入实体列表entities
+            current = {'type': tag[2:], 'start': idx, 'end': idx}
+            #重新开始一个新实体，记录类型和起始位置，类型是标签去掉B-的部分
+        elif tag.startswith('I-') and current and current['type'] == tag[2:]:
+            #如果标签是I-开头，且当前已有实体，且类型匹配
+            current['end'] = idx
+            #更新当前实体的结束位置，不断循环，直到最后一个I-标签，就是实体的结束位置
+        else:
+            #遇到O标签或不匹配的I-标签，表示实体结束
+            if current:
+                #如果当前已有实体
+                entities.append(current)
+                #把当前实体加入实体列表entities
+                current = None
+                #重置当前实体为None，等待下一个B-标签开始新实体
+    if current:
+        #如果当前还有未加入的实体
+        entities.append(current)
+        #把最后一个实体加入实体列表entities
+    return entities
+
+
+def extract_entity_level_features(tokens: List[str], true_tags: List[str], pred_tags: List[str], 
+                                  model=None, tokenizer=None, device=None, max_length=128) -> List[Dict[str, Any]]:
     """
     提取实体级别的judge特征
     Args:
         tokens: 词列表
         true_tags: 金标准BIO标签列表
         pred_tags: 预测BIO标签列表
+        model: NER模型（用于提取embeddings和logits）
+        tokenizer: 分词器
+        device: 设备
+        max_length: 最大序列长度
     returns: List of entity-level feature dicts
     """
     
-    def extract_entities(tags):
-        """
-        从BIO标签提取实体
-        Args:
-            tags: BIO标签列表
-        returns: List of entities with start, end, type
-        例如: [{'type': 'PER', 'start': 0, 'end': 2}, ...]
-        """
-        entities = []
-        current = None
-        for idx, tag in enumerate(tags):
-            if tag.startswith('B-'):
-                #如果标签是B-开头，表示一个新实体的开始
-                if current:
-                    #如果当前已有实体
-                    entities.append(current)
-                    #把当前的实体加入实体列表entities
-                current = {'type': tag[2:], 'start': idx, 'end': idx}
-                #重新开始一个新实体，记录类型和起始位置，类型是标签去掉B-的部分
-            elif tag.startswith('I-') and current and current['type'] == tag[2:]:
-                #如果标签是I-开头，且当前已有实体，且类型匹配
-                current['end'] = idx
-                #更新当前实体的结束位置，不断循环，直到最后一个I-标签，就是实体的结束位置
-            else:
-                #遇到O标签或不匹配的I-标签，表示实体结束
-                if current:
-                    #如果当前已有实体
-                    entities.append(current)
-                    #把当前实体加入实体列表entities
-                    current = None
-                    #重置当前实体为None，等待下一个B-标签开始新实体
-        if current:
-            #如果当前还有未加入的实体
-            entities.append(current)
-            #把最后一个实体加入实体列表entities
-        return entities
-    
-    def create_entity_feature(entity: Dict, tokens: List[str], is_correct: bool, match_type: str) -> Dict[str, Any]:
+    def create_entity_feature(pred_entity: Dict, true_entity: Dict, tokens: List[str], 
+                             match_type: str, span_features: Dict = None) -> Dict[str, Any]:
         """
         创建实体特征字典
         Args:
-            entity: 实体字典，包含type, start, end
+            pred_entity: 预测实体字典
+            true_entity: 真实实体字典  
             tokens: 词列表
-            is_correct: 实体是否正确匹配
             match_type: 匹配类型描述
+            span_features: 从模型提取的span特征
         """
-        start, end = entity['start'], entity['end']
-        return {
-            'entity_text': ''.join(tokens[start:end+1]),#根据实体的起始和结束位置，从tokens中提取实体文本
-            'entity_type': entity['type'],
-            'start_pos': start,
-            'end_pos': end,
-            'length': end - start + 1,
-            'is_correct': is_correct,
+        if pred_entity:
+            pred_start = pred_entity['start']
+            pred_end = pred_entity['end']
+        else:
+            pred_start = pred_end = None
+
+        if true_entity:
+            true_start = true_entity['start']
+            true_end = true_entity['end']
+        else:
+            true_start = true_end = None
+
+        if pred_entity is not None:
+            main_start, main_end = pred_start, pred_end
+        elif true_entity is not None:
+            main_start, main_end = true_start, true_end
+        else:
+            main_start = main_end = None
+
+        if main_start is not None and main_end is not None:
+            # 确保索引在有效范围内
+            start_idx = max(0, min(main_start, len(tokens)-1))
+            end_idx = max(start_idx, min(main_end, len(tokens)-1))
+            
+            entity_tokens = tokens[start_idx:end_idx+1]
+            entity_span = ''.join(entity_tokens)
+            
+            # 安全的上下文提取
+            context_before = tokens[max(0, start_idx-2):start_idx] if start_idx > 0 else ["<BOS>"]
+            context_after = tokens[end_idx+1:min(len(tokens), end_idx+3)] if end_idx < len(tokens)-1 else ["<EOS>"]
+        else:
+            entity_tokens = []
+            entity_span = ""
+            context_before = ["<BOS>"]
+            context_after = ["<EOS>"]
+        
+        feature = {
+            'entity_span': entity_span,
+            'tokens': entity_tokens,
+            'pred_start_end': [pred_start, pred_end] if pred_start is not None else None,
+            'true_start_end': [true_start, true_end] if true_start is not None else None,
+            'pred_type': pred_entity['type'] if pred_entity else None,
+            'true_type': true_entity['type'] if true_entity else None,
             'match_type': match_type,
-            'tokens': tokens[start:end+1],
-            'context_before': tokens[max(0, start-2):start] if start > 0 else [],#取实体前两个词作为上下文
-            'context_after': tokens[end+1:min(len(tokens), end+3)] if end < len(tokens)-1 else [] #取实体后两个词作为上下文
+            'context_before': context_before,
+            'context_after': context_after
         }
+        
+        # 添加模型特征
+        if span_features:
+            feature.update(span_features)
+        
+        return feature
     
     true_entities = extract_entities(true_tags)
     #从真实标签中提取实体列表，例如: [{'type': 'PER', 'start': 0, 'end': 2}, ...]
@@ -331,41 +439,273 @@ def extract_entity_level_features(tokens: List[str], true_tags: List[str], pred_
     features = []
     processed_true_entities = set()
     
+    # 获取span特征
+    span_features_cache = {}
+    if model is not None and tokenizer is not None:
+        span_features_cache = extract_span_features(tokens, model, tokenizer, device, max_length)
+    
     # 处理预测实体
     for pred_ent in pred_entities:
         pred_key = (pred_ent['start'], pred_ent['end'], pred_ent['type'])
-        #例如: (0, 2, 'PER')
+        
+        # 查找对应的真实实体
+        matched_true_ent = None
+        match_type = "botherror"  # 默认为类型边界均错误
         
         if pred_key in true_entity_set:
-            # 完全匹配
-            features.append(create_entity_feature(pred_ent, tokens, True, "exact"))
+            # 完全匹配：类型和边界均正确
+            match_type = "correct"
+            # 找到对应的真实实体
+            matched_true_ent = next(ent for ent in true_entities if 
+                                  (ent['start'], ent['end'], ent['type']) == pred_key)
             processed_true_entities.add(pred_key)
         else:
-            # 检查部分匹配
-            match_type = "no_match"
-            for true_ent in true_entities:
-                if (pred_ent['start'] == true_ent['start'] and pred_ent['end'] == true_ent['end']):
-                    #如果起始和结束位置都匹配，但类型不匹配
-                    match_type = "boundary_correct_type_wrong"
-                    break
-                elif pred_ent['type'] == true_ent['type']:
-                    #如果类型匹配，但位置不匹配
-                    match_type = "type_correct_boundary_wrong"
-                else:
-                    #完全不匹配
-                    match_type = "type_wrong_boundary_wrong"
+            # 检查是否为幻觉错误：预测位置的真实标签全为O
+            pred_start, pred_end = pred_ent['start'], pred_ent['end']
+            is_hallucination = all(tag == 'O' for tag in true_tags[pred_start:pred_end+1])
             
-            features.append(create_entity_feature(pred_ent, tokens, False, match_type))
+            if is_hallucination:
+                match_type = "hallucinationerror"
+                matched_true_ent = None
+            else:
+                # 检查部分匹配
+                exact_boundary_match = False
+                exact_type_match = False
+                
+                for true_ent in true_entities:
+                    if (pred_ent['start'] == true_ent['start'] and pred_ent['end'] == true_ent['end']):
+                        # 边界完全匹配
+                        if pred_ent['type'] == true_ent['type']:
+                            # 不应该到这里，因为会被完全匹配捕获
+                            match_type = "correct"
+                        else:
+                            # 边界正确，类型错误
+                            match_type = "typeerror"
+                        matched_true_ent = true_ent
+                        exact_boundary_match = True
+                        processed_true_entities.add((true_ent['start'], true_ent['end'], true_ent['type']))
+                        break
+                
+                # 如果没有找到边界完全匹配，检查类型匹配（但不应该随便匹配第一个相同类型的实体）
+                if not exact_boundary_match:
+                    # 寻找类型匹配且有位置重叠的实体
+                    type_overlap_candidates = []
+                    for true_ent in true_entities:
+                        if pred_ent['type'] == true_ent['type']:
+                            # 检查是否有位置重叠
+                            overlap_start = max(pred_ent['start'], true_ent['start'])
+                            overlap_end = min(pred_ent['end'], true_ent['end'])
+                            if overlap_start <= overlap_end:  # 有实际重叠
+                                overlap_len = overlap_end - overlap_start + 1
+                                true_key = (true_ent['start'], true_ent['end'], true_ent['type'])
+                                is_used = true_key in processed_true_entities
+                                type_overlap_candidates.append((is_used, overlap_len, true_ent, true_key))
+                    
+                    # 如果找到类型匹配且有重叠的实体
+                    if type_overlap_candidates:
+                        type_overlap_candidates.sort(key=lambda x: (x[0], -x[1]))
+                        best_true_ent = type_overlap_candidates[0][2]
+                        best_true_key = type_overlap_candidates[0][3]
+                        match_type = "boundaryerror"
+                        matched_true_ent = best_true_ent
+                        exact_type_match = True
+                        processed_true_entities.add(best_true_key)
+                
+                # 如果既没有边界匹配也没有类型匹配，检查是否有真正的位置重叠
+                if not exact_boundary_match and not exact_type_match:
+                    overlap_candidates = []
+                    for true_ent in true_entities:
+                        true_key = (true_ent['start'], true_ent['end'], true_ent['type'])
+                        # 检查实际的位置重叠
+                        overlap_start = max(pred_ent['start'], true_ent['start'])
+                        overlap_end = min(pred_ent['end'], true_ent['end'])
+                        # 只有真正有重叠的位置才考虑匹配
+                        if overlap_start <= overlap_end:
+                            overlap_len = overlap_end - overlap_start + 1
+                            is_used = true_key in processed_true_entities
+                            overlap_candidates.append((is_used, overlap_len, true_ent, true_key))
+
+                    # 只有存在真实重叠时才进行匹配
+                    if overlap_candidates:
+                        # 优先选择尚未匹配的实体，其次选择重叠最长的
+                        overlap_candidates.sort(key=lambda x: (x[0], -x[1]))
+                        best_true_ent = overlap_candidates[0][2]
+                        best_true_key = overlap_candidates[0][3]
+                        matched_true_ent = best_true_ent
+                        processed_true_entities.add(best_true_key)
+        
+        # 获取span特征
+        span_feats = span_features_cache.get((pred_ent['start'], pred_ent['end']), {})
+        
+        features.append(create_entity_feature(pred_ent, matched_true_ent, tokens, match_type, span_feats))
     
     # 处理遗漏的真实实体
     for true_ent in true_entities:
         true_key = (true_ent['start'], true_ent['end'], true_ent['type'])
         if true_key not in processed_true_entities:
-            features.append(create_entity_feature(true_ent, tokens, False, "missed_entity"))
+            # 获取span特征
+            span_feats = span_features_cache.get((true_ent['start'], true_ent['end']), {})
+            features.append(create_entity_feature(None, true_ent, tokens, "missed", span_feats))
     
     return features
 
 
+def extract_span_features(tokens: List[str], model, tokenizer, device, max_length: int) -> Dict[Tuple[int, int], Dict]:
+    """
+    提取所有可能span的特征
+    Args:
+        tokens: 词列表（每个汉字作为一个token）
+        model: NER模型
+        tokenizer: 分词器 
+        device: 设备
+        max_length: 最大长度
+    Returns:
+        Dict mapping (start, end) -> span features
+    """
+    try:
+        # 输入验证
+        if not tokens or len(tokens) == 0:
+            return {}
+        
+        # 编码输入
+        encoded = tokenizer(
+            tokens,
+            is_split_into_words=True,
+            return_tensors="pt",
+            max_length=max_length,
+            truncation=True,
+            padding=True
+        )
+        word_ids = encoded.word_ids(batch_index=0)
+        
+        if word_ids is None:
+            print("警告：tokenizer未返回word_ids")
+            return {}
+
+        # 仅保留模型需要的字段，避免传入不支持的 token_type_ids 等参数
+        inputs = {
+            key: value.to(device)
+            for key, value in encoded.items()
+            if key in {"input_ids", "attention_mask"}
+        }
+        
+        # 模型前向传播
+        model.eval()  # 确保模型处于评估模式
+        with torch.no_grad():
+            try:
+                bert_outputs = model.bert(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs.get("attention_mask"),
+                    output_hidden_states=True,
+                    return_dict=True
+                )
+                sequence_output = bert_outputs.last_hidden_state
+                
+                # 检查LSTM层是否存在
+                if hasattr(model, 'lstm') and model.lstm is not None:
+                    lstm_output, _ = model.lstm(sequence_output)
+                    if hasattr(model, 'dropout') and model.dropout is not None:
+                        lstm_output = model.dropout(lstm_output)
+                    hidden_states = lstm_output
+                else:
+                    # 如果没有LSTM层，使用BERT输出
+                    hidden_states = sequence_output
+                
+                # 检查分类器是否存在
+                if hasattr(model, 'classifier') and model.classifier is not None:
+                    logits = model.classifier(hidden_states)
+                else:
+                    print("警告：模型没有classifier层，无法计算logits")
+                    logits = None
+                    
+            except Exception as e:
+                print(f"模型前向传播失败: {e}")
+                return {}
+
+        # 构建token到wordpiece的映射
+        token_to_wordpiece: Dict[int, List[int]] = {}
+        for idx, word_id in enumerate(word_ids):
+            if word_id is None:
+                continue
+            token_to_wordpiece.setdefault(word_id, []).append(idx)
+
+        # 验证映射覆盖所有tokens
+        missing_tokens = [i for i in range(len(tokens)) if i not in token_to_wordpiece]
+        if missing_tokens:
+            print(f"警告：以下tokens没有wordpiece映射: {missing_tokens}")
+
+        # 为每个可能的span计算特征
+        span_features = {}
+        max_entity_length = min(10, len(tokens))  # 限制最大实体长度
+
+        for start in range(len(tokens)):
+            for end in range(start, min(start + max_entity_length, len(tokens))):
+                start_pieces = token_to_wordpiece.get(start)
+                end_pieces = token_to_wordpiece.get(end)
+
+                # 检查wordpiece映射是否存在
+                if not start_pieces or not end_pieces:
+                    continue
+
+                actual_start = start_pieces[0]
+                actual_end = end_pieces[-1]
+
+                # 验证wordpiece索引有效性
+                if (actual_end < actual_start or 
+                    actual_start >= hidden_states.size(1) or 
+                    actual_end >= hidden_states.size(1)):
+                    continue
+
+                try:
+                    # 提取span的hidden states
+                    span_hidden = hidden_states[0, actual_start:actual_end+1]  # [span_len, hidden_size]
+                    
+                    if span_hidden.size(0) == 0:
+                        continue
+                        
+                    span_embedding = torch.mean(span_hidden, dim=0)  # 平均池化
+
+                    feature_dict = {
+                        'span_embedding': span_embedding.cpu().numpy().tolist(),
+                        'span_length': end - start + 1,
+                        'wordpiece_length': actual_end - actual_start + 1
+                    }
+                    
+                    # 如果有logits，添加相关特征
+                    if logits is not None:
+                        span_logits = logits[0, actual_start:actual_end+1]  # [span_len, num_labels]
+                        span_logits_pooled = torch.mean(span_logits, dim=0)  # 平均池化
+                        
+                        # 计算softmax概率
+                        span_softmax = torch.softmax(span_logits_pooled, dim=0)
+                        
+                        # 预测标签和置信度
+                        pred_label_idx = torch.argmax(span_softmax)
+                        pred_score = span_softmax[pred_label_idx].item()
+                        
+                        # 计算熵（不确定性）
+                        span_entropy = -torch.sum(span_softmax * torch.log(span_softmax + 1e-8)).item()
+                        
+                        feature_dict.update({
+                            'logits_pooled': span_logits_pooled.cpu().numpy().tolist(),
+                            'softmax_pooled': span_softmax.cpu().numpy().tolist(), 
+                            'pred_score': pred_score,
+                            'span_entropy': span_entropy
+                        })
+                    
+                    span_features[(start, end)] = feature_dict
+                    
+                except Exception as e:
+                    print(f"计算span({start}, {end})特征时出错: {e}")
+                    continue
+        
+        return span_features
+        
+    except Exception as e:
+        print(f"提取span特征失败: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return {}
 def generate_judge_samples(fold_test: List[Dict], model_path: str, judge_config: JudgeDataConfig) -> List[Dict[str, Any]]:
     """
     使用训练好的模型预测测试fold，生成judge样本
@@ -400,29 +740,47 @@ def generate_judge_samples(fold_test: List[Dict], model_path: str, judge_config:
         true_tags = true_tags[:min_len]
         pred_tags = pred_tags[:min_len]
         
-        # 提取实体级别特征
-        entity_features = extract_entity_level_features(tokens, true_tags, pred_tags)
+        # 提取实体级别特征（包含模型特征）
+        entity_features = extract_entity_level_features(tokens, true_tags, pred_tags, 
+                                                       model, tokenizer, device, max_length)
         
         # 计算序列级别统计
         token_accuracy = sum(1 for t, p in zip(true_tags, pred_tags) if t == p) / len(true_tags)
         
         # 计算实体统计
-        pred_entities = [f for f in entity_features if f['match_type'] != 'missed_entity']#预测的实体数
-        true_entities = len(entity_features)  # 真实的实体数，包括预测的和遗漏的
-        correct_entities = len([f for f in entity_features if f['is_correct']])#正确的实体数
+        pred_entities = [f for f in entity_features if f['match_type'] != 'missed']#预测的实体数
+        true_entities_from_labels = extract_entities(true_tags)  # 从真实标签提取的实体
+        num_true_entities = len(true_entities_from_labels)  # 真实的实体数
+        num_pred_entities = len(pred_entities)  # 预测的实体数
+        correct_entities = len([f for f in entity_features if f['match_type'] == 'correct'])#正确的实体数
         
+        # 详细错误统计
+        error_stats = {
+            'correct': len([f for f in entity_features if f['match_type'] == 'correct']),
+            'typeerror': len([f for f in entity_features if f['match_type'] == 'typeerror']),
+            'boundaryerror': len([f for f in entity_features if f['match_type'] == 'boundaryerror']),
+            'botherror': len([f for f in entity_features if f['match_type'] == 'botherror']),
+            'hallucinationerror': len([f for f in entity_features if f['match_type'] == 'hallucinationerror']),
+            'missed': len([f for f in entity_features if f['match_type'] == 'missed'])
+        }
+        
+        sample_id = sample.get('id') or sample.get('ID') or sample.get('Id') or sample.get('iD')
+        if sample_id is None:
+            sample_id = f"sample_{len(judge_samples)}"
+
         # 构造judge样本
         judge_sample = {
-            'id': sample.get('id', f"sample_{len(judge_samples)}"),
+            'id': sample_id,
             'tokens': tokens,
             'true_labels': true_tags,
             'pred_labels': pred_tags,
             'entity_features': entity_features,
             'sequence_accuracy': token_accuracy,
             'sequence_length': len(tokens),
-            'num_entities_pred': len(pred_entities),
-            'num_entities_total': true_entities,
-            'num_correct_entities': correct_entities
+            'num_entities_pred': num_pred_entities,
+            'num_entities_true': num_true_entities,
+            'num_correct_entities': correct_entities,
+            'error_statistics': error_stats
         }
         
         judge_samples.append(judge_sample)
@@ -489,9 +847,20 @@ def main():
             json.dump(fold_judge_samples, f, ensure_ascii=False, indent=2)
         
         # 计算并保存当前折的统计信息
-        fold_total_entities = sum(sample['num_entities_total'] for sample in fold_judge_samples)
+        fold_true_entities = sum(sample['num_entities_true'] for sample in fold_judge_samples)
+        fold_pred_entities = sum(sample['num_entities_pred'] for sample in fold_judge_samples)
         fold_correct_entities = sum(sample['num_correct_entities'] for sample in fold_judge_samples)
-        fold_accuracy = fold_correct_entities / fold_total_entities if fold_total_entities > 0 else 0
+        fold_accuracy = fold_correct_entities / fold_true_entities if fold_true_entities > 0 else 0
+        
+        # 计算折级错误统计
+        fold_error_stats = {
+            'correct': sum(sample['error_statistics']['correct'] for sample in fold_judge_samples),
+            'typeerror': sum(sample['error_statistics']['typeerror'] for sample in fold_judge_samples),
+            'boundaryerror': sum(sample['error_statistics']['boundaryerror'] for sample in fold_judge_samples),
+            'botherror': sum(sample['error_statistics']['botherror'] for sample in fold_judge_samples),
+            'hallucinationerror': sum(sample['error_statistics']['hallucinationerror'] for sample in fold_judge_samples),
+            'missed': sum(sample['error_statistics']['missed'] for sample in fold_judge_samples)
+        }
         
         fold_stats = {
             "fold_id": fold_id + 1,
@@ -499,10 +868,12 @@ def main():
             "train_samples": len(fold_train),
             "test_samples": len(fold_test),
             "judge_samples": len(fold_judge_samples),
-            "total_entities": fold_total_entities,
+            "true_entities": fold_true_entities,
+            "pred_entities": fold_pred_entities,
             "correct_entities": fold_correct_entities,
             "entity_accuracy": fold_accuracy,
-            "avg_sequence_accuracy": sum(sample['sequence_accuracy'] for sample in fold_judge_samples) / len(fold_judge_samples) if fold_judge_samples else 0
+            "avg_sequence_accuracy": sum(sample['sequence_accuracy'] for sample in fold_judge_samples) / len(fold_judge_samples) if fold_judge_samples else 0,
+            "error_breakdown": fold_error_stats
         }
         
         fold_stats_path = os.path.join(fold_results_dir, f"fold_{fold_id+1}_stats.json")
@@ -541,9 +912,20 @@ def main():
         json.dump(all_judge_samples, f, ensure_ascii=False, indent=2)
     
     # 统计信息
-    total_entities = sum(sample['num_entities_total'] for sample in all_judge_samples)
+    total_true_entities = sum(sample['num_entities_true'] for sample in all_judge_samples)
+    total_pred_entities = sum(sample['num_entities_pred'] for sample in all_judge_samples)
     correct_entities = sum(sample['num_correct_entities'] for sample in all_judge_samples)
     avg_sequence_acc = sum(sample['sequence_accuracy'] for sample in all_judge_samples) / len(all_judge_samples) if all_judge_samples else 0
+    
+    # 计算整体错误统计
+    overall_error_stats = {
+        'correct': sum(sample['error_statistics']['correct'] for sample in all_judge_samples),
+        'typeerror': sum(sample['error_statistics']['typeerror'] for sample in all_judge_samples),
+        'boundaryerror': sum(sample['error_statistics']['boundaryerror'] for sample in all_judge_samples),
+        'botherror': sum(sample['error_statistics']['botherror'] for sample in all_judge_samples),
+        'hallucinationerror': sum(sample['error_statistics']['hallucinationerror'] for sample in all_judge_samples),
+        'missed': sum(sample['error_statistics']['missed'] for sample in all_judge_samples)
+    }
     
     # 保存整体统计信息
     overall_stats = {
@@ -557,10 +939,20 @@ def main():
         },
         "results": {
             "total_samples": len(all_judge_samples),
-            "total_entities": total_entities,
+            "total_true_entities": total_true_entities,
+            "total_pred_entities": total_pred_entities,
             "correct_entities": correct_entities,
-            "overall_entity_accuracy": correct_entities / total_entities if total_entities > 0 else 0,
-            "overall_sequence_accuracy": avg_sequence_acc
+            "overall_entity_accuracy": correct_entities / total_true_entities if total_true_entities > 0 else 0,
+            "overall_sequence_accuracy": avg_sequence_acc,
+            "error_breakdown": overall_error_stats,
+            "error_percentages": {
+                "correct": overall_error_stats['correct'] / total_true_entities * 100 if total_true_entities > 0 else 0,
+                "typeerror": overall_error_stats['typeerror'] / total_true_entities * 100 if total_true_entities > 0 else 0,
+                "boundaryerror": overall_error_stats['boundaryerror'] / total_true_entities * 100 if total_true_entities > 0 else 0,
+                "botherror": overall_error_stats['botherror'] / total_true_entities * 100 if total_true_entities > 0 else 0,
+                "hallucinationerror": overall_error_stats['hallucinationerror'] / total_true_entities * 100 if total_true_entities > 0 else 0,
+                "missed": overall_error_stats['missed'] / total_true_entities * 100 if total_true_entities > 0 else 0
+            }
         },
         "files": {
             "judge_training_data": "judge_training_data.json",
@@ -574,10 +966,20 @@ def main():
     
     print(f"\n=== Judge数据生成完成 ===")
     print(f"总样本数: {len(all_judge_samples)}")
-    print(f"总实体数: {total_entities}")
+    print(f"真实实体数: {total_true_entities}")
+    print(f"预测实体数: {total_pred_entities}")
     print(f"正确实体数: {correct_entities}")
-    if total_entities > 0:
-        print(f"实体准确率: {correct_entities/total_entities:.3f}")
+    if total_true_entities > 0:
+        print(f"实体准确率(基于真实实体): {correct_entities/total_true_entities:.3f}")
+        if total_pred_entities > 0:
+            print(f"实体精确率(基于预测实体): {correct_entities/total_pred_entities:.3f}")
+        print(f"\n--- 详细错误分析 ---")
+        print(f"完全正确(correct): {overall_error_stats['correct']} ({overall_error_stats['correct']/total_true_entities*100:.1f}%)")
+        print(f"类型错误(typeerror): {overall_error_stats['typeerror']} ({overall_error_stats['typeerror']/total_true_entities*100:.1f}%)")
+        print(f"边界错误(boundaryerror): {overall_error_stats['boundaryerror']} ({overall_error_stats['boundaryerror']/total_true_entities*100:.1f}%)")
+        print(f"类型边界均错(botherror): {overall_error_stats['botherror']} ({overall_error_stats['botherror']/total_true_entities*100:.1f}%)")
+        print(f"幻觉错误(hallucinationerror): {overall_error_stats['hallucinationerror']} ({overall_error_stats['hallucinationerror']/total_true_entities*100:.1f}%)")
+        print(f"遗漏实体(missed): {overall_error_stats['missed']} ({overall_error_stats['missed']/total_true_entities*100:.1f}%)")
     else:
         print("实体准确率: N/A (无实体)")
     print(f"序列准确率: {avg_sequence_acc:.3f}")

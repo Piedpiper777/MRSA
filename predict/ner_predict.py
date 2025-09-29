@@ -28,6 +28,7 @@ IGNORE_INDEX = -100
 # ---------------- 新增: 读取并校验自定义 config ----------------
 
 def load_custom_config(model_dir: str) -> Dict[str, Any]:
+    """加载训练时保存的自定义配置 (不含 HuggingFace 原始 BERT 配置) 并做基础校验。"""
     cfg_path = os.path.join(model_dir, 'config.json')
     if not os.path.isfile(cfg_path):
         raise FileNotFoundError(f"未找到自定义配置文件: {cfg_path}")
@@ -61,7 +62,11 @@ def load_model(model_dir: str, bert_model: str, device: torch.device) -> BertBiL
         dropout_rate=cfg.get('dropout_rate', 0.1),
         max_length=cfg.get('max_length', 128)
     )
-    sd = torch.load(state_path, map_location=device)
+    try:
+        sd = torch.load(state_path, map_location=device, weights_only=True)
+    except TypeError:
+        # 兼容老版本 PyTorch 无 weights_only 参数的情况
+        sd = torch.load(state_path, map_location=device)
     model.load_state_dict(sd, strict=True)
     model.to(device)
     model.eval()
