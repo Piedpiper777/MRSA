@@ -1,0 +1,98 @@
+{
+  "experiment_config": {
+    "k_folds": 40,
+    "val_ratio": 0.1,
+    "num_train_epochs": 30,
+    "batch_size": 16,
+    "bert_lr": 2e-05,
+    "other_lr": 0.001
+  },
+  "results": {
+    "total_samples": 417,
+    "total_true_entities": 690,
+    "total_pred_entities": 686,
+    "correct_entities": 597,
+    "overall_entity_accuracy": 0.8652173913043478,
+    "overall_sequence_accuracy": 0.9841621310049524,
+    "error_breakdown": {
+      "correct": 597,
+      "typeerror": 15,
+      "boundaryerror": 41,
+      "botherror": 12,
+      "hallucinationerror": 21,
+      "missed": 31
+    },
+    "error_percentages": {
+      "correct": 86.52173913043478,
+      "typeerror": 2.1739130434782608,
+      "boundaryerror": 5.942028985507246,
+      "botherror": 1.7391304347826086,
+      "hallucinationerror": 3.0434782608695654,
+      "missed": 4.492753623188406
+    }
+  },
+  "files": {
+    "judge_training_data": "judge_training_data.json",
+    "fold_results": [
+      "fold_1_results/",
+      "fold_2_results/",
+      "fold_3_results/",
+      "fold_4_results/",
+      "fold_5_results/",
+      "fold_6_results/",
+      "fold_7_results/",
+      "fold_8_results/",
+      "fold_9_results/",
+      "fold_10_results/",
+      "fold_11_results/",
+      "fold_12_results/",
+      "fold_13_results/",
+      "fold_14_results/",
+      "fold_15_results/",
+      "fold_16_results/",
+      "fold_17_results/",
+      "fold_18_results/",
+      "fold_19_results/",
+      "fold_20_results/",
+      "fold_21_results/",
+      "fold_22_results/",
+      "fold_23_results/",
+      "fold_24_results/",
+      "fold_25_results/",
+      "fold_26_results/",
+      "fold_27_results/",
+      "fold_28_results/",
+      "fold_29_results/",
+      "fold_30_results/",
+      "fold_31_results/",
+      "fold_32_results/",
+      "fold_33_results/",
+      "fold_34_results/",
+      "fold_35_results/",
+      "fold_36_results/",
+      "fold_37_results/",
+      "fold_38_results/",
+      "fold_39_results/",
+      "fold_40_results/"
+    ]
+  },
+  "analysis":
+  {
+    "总样本数":417,
+    "真实实体数": 690,
+    "预测实体数": 686,
+    "正确实体数": 597,
+    "实体准确率(基于真实实体)": 0.865,
+    "实体精确率(基于预测实体)": 0.870,
+
+    "完全正确(correct)": "597 (86.5%)",
+    "类型错误(typeerror)":"15 (2.2%)",
+    "边界错误(boundaryerror)": "41 (5.9%)",
+    "类型边界均错(botherror)": "12 (1.7%)",
+    "幻觉错误(hallucinationerror)": "21 (3.0%)",
+    "遗漏实体(missed)": "31 (4.5%)",
+    "序列准确率": "0.984"
+  }
+}
+
+

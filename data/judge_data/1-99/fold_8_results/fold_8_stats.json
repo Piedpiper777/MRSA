@@ -1,0 +1,20 @@
+{
+  "fold_id": 8,
+  "model_path": "/workspace/MRSA/data/judge_data/1-99/temp/fold_8_model/best_model_f1_0.9146",
+  "train_samples": 406,
+  "test_samples": 11,
+  "judge_samples": 11,
+  "true_entities": 21,
+  "pred_entities": 20,
+  "correct_entities": 18,
+  "entity_accuracy": 0.8571428571428571,
+  "avg_sequence_accuracy": 0.9909688013136289,
+  "error_breakdown": {
+    "correct": 18,
+    "typeerror": 0,
+    "boundaryerror": 2,
+    "botherror": 0,
+    "hallucinationerror": 0,
+    "missed": 1
+  }
+}

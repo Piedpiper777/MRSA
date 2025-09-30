@@ -46,7 +46,7 @@ class JudgeDataConfig:
     val_data_path: str = r"/workspace/MRSA/data/judge_data/1-99/validation.json" #验证集保存路径
     
     # K折设置
-    k_folds: int = 2
+    k_folds: int = 40
     random_seed: int = 42
     val_ratio: float = 0.1
     
@@ -75,7 +75,7 @@ def create_train_config(judge_config: JudgeDataConfig) -> TrainConfig:
         batch_size=16,
         adam_epsilon=1e-8,
         max_grad_norm=1.0,
-        num_train_epochs=5,
+        num_train_epochs=30,
         warmup_steps=0,
         
         # 分组学习率
@@ -85,7 +85,7 @@ def create_train_config(judge_config: JudgeDataConfig) -> TrainConfig:
         other_weight_decay=0.1,
         
         # 早停和验证
-        patience=5,
+        patience=10,
         min_delta=0.0001,
         early_stopping=True,
         logging_steps=100,
